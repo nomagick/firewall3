@@ -186,8 +186,15 @@ check_snat(struct fw3_state *state, struct fw3_snat *snat, struct uci_element *e
 		fw3_parse_protocol(&snat->proto, "all", true);
 	}
 
-	if (snat->_src)
-		set(snat->_src->flags, FW3_FAMILY_V4, FW3_FLAG_SNAT);
+	if (snat->_src) {
+
+#ifdef ENABLE_NAT6
+		if (fw3_is_family(snat->_src, FW3_FAMILY_V6)) 
+			set(snat->_src->flags, FW3_FAMILY_V6, FW3_FLAG_SNAT);
+		if (fw3_is_family(snat->_src, FW3_FAMILY_V4))
+#endif
+			set(snat->_src->flags, FW3_FAMILY_V4, FW3_FLAG_SNAT);
+	}
 
 	return true;
 }
@@ -265,7 +272,11 @@ static void
 set_target(struct fw3_ipt_rule *r, struct fw3_snat *snat,
            struct fw3_protocol *proto)
 {
+#ifdef ENABLE_NAT6
+	char buf[sizeof("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff:65535-65535\0")];
+#else
 	char buf[sizeof("255.255.255.255:65535-65535\0")];
+#endif
 
 	if (snat->target == FW3_FLAG_SNAT)
 	{
@@ -273,7 +284,12 @@ set_target(struct fw3_ipt_rule *r, struct fw3_snat *snat,
 
 		if (snat->ip_snat.set)
 		{
-			inet_ntop(AF_INET, &snat->ip_snat.address.v4, buf, sizeof(buf));
+#ifdef ENABLE_NAT6
+			if (snat->ip_snat.family == FW3_FAMILY_V6)
+				inet_ntop(AF_INET6, &snat->ip_snat.address.v6, buf, sizeof(buf));
+			else
+#endif
+				inet_ntop(AF_INET, &snat->ip_snat.address.v4, buf, sizeof(buf));
 		}
 
 		if (snat->port_snat.set && proto && !proto->any &&
@@ -410,8 +426,10 @@ fw3_print_snats(struct fw3_ipt_handle *handle, struct fw3_state *state)
 	int num = 0;
 	struct fw3_snat *snat;
 
+#ifndef ENABLE_NAT6
 	if (handle->family == FW3_FAMILY_V6)
 		return;
+#endif
 
 	if (handle->table != FW3_TABLE_NAT)
 		return;

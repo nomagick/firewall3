@@ -124,11 +124,27 @@ check_families(struct uci_element *e, struct fw3_redirect *r)
 static bool
 compare_addr(struct fw3_address *a, struct fw3_address *b)
 {
-	if (a->family != FW3_FAMILY_V4 || b->family != FW3_FAMILY_V4)
-		return false;
-
-	return ((a->address.v4.s_addr & a->mask.v4.s_addr) ==
+	if (a->family == FW3_FAMILY_V4) {
+		if (b->family != FW3_FAMILY_V4) {
+			return false;
+		}
+		return ((a->address.v4.s_addr & a->mask.v4.s_addr) ==
 	        (b->address.v4.s_addr & a->mask.v4.s_addr));
+	}
+
+	if (a->family == FW3_FAMILY_V6) {
+		if (b->family != FW3_FAMILY_V6) {
+			return false;
+		}
+		bool r = true;
+		int i;
+		for (i = 0; i < 4; i++)
+			r = r && ((a->address.v6.s6_addr32[i] & a->mask.v6.s6_addr32[i]) == 
+			(b->address.v6.s6_addr32[i] & a->mask.v6.s6_addr32[i]));
+		return r;
+	}
+	
+	return false;
 }
 
 static bool
@@ -223,6 +239,11 @@ select_helper(struct fw3_state *state, struct fw3_redirect *redir)
 	redir->helper.ptr = helper;
 
 	set(redir->_src->flags, FW3_FAMILY_V4, FW3_FLAG_HELPER);
+
+#ifdef ENABLE_NAT6
+	set(redir->_src->flags, FW3_FAMILY_V6, FW3_FLAG_HELPER);
+#endif
+
 }
 
 static bool
@@ -297,8 +318,14 @@ check_redirect(struct fw3_state *state, struct fw3_redirect *redir, struct uci_e
 		else if (redir->helper.invert)
 			warn_section("redirect", redir, e, "must not use a negated helper match");
 		else
-		{
-			set(redir->_src->flags, FW3_FAMILY_V4, redir->target);
+		{		
+#ifdef ENABLE_NAT6
+			if (fw3_is_family(redir, FW3_FAMILY_V6))
+				set(redir->_src->flags, FW3_FAMILY_V6, redir->target);
+			if (fw3_is_family(redir, FW3_FAMILY_V4))
+#endif
+				set(redir->_src->flags, FW3_FAMILY_V4, redir->target);
+
 			valid = true;
 
 			if (!check_local(e, redir, state) && !redir->dest.set &&
@@ -309,15 +336,32 @@ check_redirect(struct fw3_state *state, struct fw3_redirect *redir, struct uci_e
 						redir->dest.name);
 			}
 
-			if (redir->reflection && redir->_dest && redir->_src->masq)
+			if (redir->reflection && redir->_dest)
 			{
-				set(redir->_dest->flags, FW3_FAMILY_V4, FW3_FLAG_ACCEPT);
-				set(redir->_dest->flags, FW3_FAMILY_V4, FW3_FLAG_DNAT);
-				set(redir->_dest->flags, FW3_FAMILY_V4, FW3_FLAG_SNAT);
+				if (redir->_src->masq && fw3_is_family(redir->_dest, FW3_FAMILY_V4)) {
+					set(redir->_dest->flags, FW3_FAMILY_V4, FW3_FLAG_ACCEPT);
+					set(redir->_dest->flags, FW3_FAMILY_V4, FW3_FLAG_DNAT);
+					set(redir->_dest->flags, FW3_FAMILY_V4, FW3_FLAG_SNAT);
+				}
+#ifdef ENABLE_NAT6 
+				if (redir->_src->masq6 && fw3_is_family(redir->_dest, FW3_FAMILY_V6)) {
+					set(redir->_dest->flags, FW3_FAMILY_V6, FW3_FLAG_ACCEPT);
+					set(redir->_dest->flags, FW3_FAMILY_V6, FW3_FLAG_DNAT);
+					set(redir->_dest->flags, FW3_FAMILY_V6, FW3_FLAG_SNAT);
+				}
+#endif			
 			}
 
 			if (redir->helper.ptr)
+			{
 				set(redir->_src->flags, FW3_FAMILY_V4, FW3_FLAG_HELPER);
+
+#ifdef ENABLE_NAT6
+				set(redir->_src->flags, FW3_FAMILY_V6, FW3_FLAG_HELPER);
+#endif
+
+			}
+				
 		}
 	}
 	else
@@ -336,6 +380,11 @@ check_redirect(struct fw3_state *state, struct fw3_redirect *redir, struct uci_e
 		else
 		{
 			set(redir->_dest->flags, FW3_FAMILY_V4, redir->target);
+
+#ifdef ENABLE_NAT6
+			set(redir->_dest->flags, FW3_FAMILY_V6, redir->target);
+#endif
+
 			valid = true;
 		}
 	}
@@ -475,13 +524,22 @@ static void
 set_snat_dnat(struct fw3_ipt_rule *r, enum fw3_flag target,
               struct fw3_address *addr, struct fw3_port *port)
 {
+#ifdef ENABLE_NAT6
+	char buf[sizeof("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff:65535-65535\0")];
+#else
 	char buf[sizeof("255.255.255.255:65535-65535\0")];
+#endif
 
 	buf[0] = '\0';
 
 	if (addr && addr->set)
 	{
-		inet_ntop(AF_INET, &addr->address.v4, buf, sizeof(buf));
+#ifdef ENABLE_NAT6
+		if (addr->family == FW3_FAMILY_V6) 
+			inet_ntop(AF_INET6, &addr->address.v6, buf, sizeof(buf));
+		else
+#endif
+			inet_ntop(AF_INET, &addr->address.v4, buf, sizeof(buf));
 	}
 
 	if (port && port->set)
@@ -729,8 +787,19 @@ expand_redirect(struct fw3_ipt_handle *handle, struct fw3_state *state,
 				else
 					ref_addr = *ext_addr;
 
-				ref_addr.mask.v4.s_addr = 0xFFFFFFFF;
-				ext_addr->mask.v4.s_addr = 0xFFFFFFFF;
+#ifdef ENABLE_NAT6
+				if (ref_addr.family == FW3_FAMILY_V6) 
+					memset(ref_addr.mask.v6.s6_addr, 0xFF, 16);
+				else
+#endif
+					ref_addr.mask.v4.s_addr = 0xFFFFFFFF;
+
+#ifdef ENABLE_NAT6
+				if (ext_addr->family == FW3_FAMILY_V6)
+					memset(ext_addr->mask.v6.s6_addr, 0xFF, 16);
+				else 
+#endif
+					ext_addr->mask.v4.s_addr = 0xFFFFFFFF;
 
 				print_reflection(handle, state, redir, num, proto,
 								 &ref_addr, int_addr, ext_addr);
@@ -749,8 +818,10 @@ fw3_print_redirects(struct fw3_ipt_handle *handle, struct fw3_state *state)
 	int num = 0;
 	struct fw3_redirect *redir;
 
+#ifndef ENABLE_NAT6
 	if (handle->family == FW3_FAMILY_V6)
 		return;
+#endif
 
 	if (handle->table != FW3_TABLE_FILTER &&
 	    handle->table != FW3_TABLE_NAT &&

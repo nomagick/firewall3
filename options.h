@@ -263,6 +263,8 @@ struct fw3_time
 
 struct fw3_mark
 {
+	struct list_head list;
+
 	bool set;
 	bool invert;
 	uint32_t mark;
@@ -340,6 +342,8 @@ struct fw3_zone
 	bool masq_allow_invalid;
 	struct list_head masq_src;
 	struct list_head masq_dest;
+
+	bool masq6;
 
 	bool mtu_fix;
 
