@@ -164,8 +164,13 @@ fw3_load_defaults(struct fw3_state *state, struct uci_package *p)
 
 		check_any_reject_code(e, &defs->any_reject_code);
 
+		bool flow_offload_avaliable = false;
 		/* exists in both ipv4 and ipv6, if at all, so only check ipv4 */
-		check_target(e, &defs->flow_offloading, "FLOWOFFLOAD", false);
+		check_target(e, &flow_offload_avaliable, "FLOWOFFLOAD", false);
+
+		if (!flow_offload_avaliable) {
+			defs->flow_offloading = false;
+		}
 	}
 }
 
