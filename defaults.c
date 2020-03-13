@@ -263,7 +263,8 @@ fw3_print_default_head_rules(struct fw3_ipt_handle *handle,
 			}
 		}
 
-		if (defs->flow_offloading)
+		// There seemd to be issues with offloading for nat6. Only use it on IPv4 for now.
+		if (defs->flow_offloading && handle->family == FW3_FAMILY_V4)
 		{
 			r = fw3_ipt_rule_new(handle);
 			fw3_ipt_rule_comment(r, "Traffic offloading");
